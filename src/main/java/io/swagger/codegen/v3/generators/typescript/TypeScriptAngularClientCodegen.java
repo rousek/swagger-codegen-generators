@@ -2,21 +2,15 @@ package io.swagger.codegen.v3.generators.typescript;
 
 import java.io.File;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-import io.swagger.codegen.v3.CliOption;
-import io.swagger.codegen.v3.CodegenModel;
-import io.swagger.codegen.v3.CodegenParameter;
-import io.swagger.codegen.v3.CodegenOperation;
-import io.swagger.codegen.v3.SupportingFile;
+import io.swagger.codegen.v3.*;
+import io.swagger.codegen.v3.generators.DefaultCodegenConfig;
 import io.swagger.codegen.v3.utils.ModelUtils;
 import io.swagger.codegen.v3.utils.SemVer;
+import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.media.ArraySchema;
 import io.swagger.v3.oas.models.media.BinarySchema;
 import io.swagger.v3.oas.models.media.FileSchema;
@@ -25,6 +19,7 @@ import io.swagger.v3.oas.models.media.ObjectSchema;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.parser.util.SchemaTypeUtil;
 import org.apache.commons.lang3.StringUtils;
+import org.mozilla.javascript.optimizer.Codegen;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -62,7 +57,7 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
         this.cliOptions.add(new CliOption(SNAPSHOT, "When setting this property to true the version will be suffixed with -SNAPSHOT.yyyyMMddHHmm", SchemaTypeUtil.BOOLEAN_TYPE).defaultValue(Boolean.FALSE.toString()));
         this.cliOptions.add(new CliOption(WITH_INTERFACES, "Setting this property to true will generate interfaces next to the default class implementations.", SchemaTypeUtil.BOOLEAN_TYPE).defaultValue(Boolean.FALSE.toString()));
         this.cliOptions.add(new CliOption(NG_VERSION, "The version of Angular. Default is '4.3'"));
-        this.cliOptions.add(new CliOption(PROVIDED_IN_ROOT, "Use this property to provide Injectables in root (it is only valid in angular version greater or equal to 6.0.0).", SchemaTypeUtil.BOOLEAN_TYPE).defaultValue(Boolean.FALSE.toString()));
+        this.cliOptions.add(new CliOption(PROVIDED_IN_ROOT, "Use this property to provide Injectables in root (it is only valid in angular version greater or equal to 6.0.0).", SchemaTypeUtil.BOOLEAN_TYPE).defaultValue(Boolean.TRUE.toString()));
     }
 
     @Override
@@ -102,13 +97,13 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
         supportingFiles
                 .add(new SupportingFile("apis.mustache", apiPackage().replace('.', '/'), "api.ts"));
         supportingFiles.add(new SupportingFile("index.mustache", getIndexDirectory(), "index.ts"));
-        supportingFiles.add(new SupportingFile("api.module.mustache", getIndexDirectory(), "api.module.ts"));
-        supportingFiles.add(new SupportingFile("configuration.mustache", getIndexDirectory(), "configuration.ts"));
-        supportingFiles.add(new SupportingFile("variables.mustache", getIndexDirectory(), "variables.ts"));
-        supportingFiles.add(new SupportingFile("encoder.mustache", getIndexDirectory(), "encoder.ts"));
-        supportingFiles.add(new SupportingFile("gitignore", "", ".gitignore"));
-        supportingFiles.add(new SupportingFile("npmignore", "", ".npmignore"));
-        supportingFiles.add(new SupportingFile("git_push.sh.mustache", "", "git_push.sh"));
+        //supportingFiles.add(new SupportingFile("api.module.mustache", getIndexDirectory(), "api.module.ts"));
+        //supportingFiles.add(new SupportingFile("configuration.mustache", getIndexDirectory(), "configuration.ts"));
+        //supportingFiles.add(new SupportingFile("variables.mustache", getIndexDirectory(), "variables.ts"));
+        //supportingFiles.add(new SupportingFile("encoder.mustache", getIndexDirectory(), "encoder.ts"));
+        //supportingFiles.add(new SupportingFile("gitignore", "", ".gitignore"));
+        //supportingFiles.add(new SupportingFile("npmignore", "", ".npmignore"));
+        //supportingFiles.add(new SupportingFile("git_push.sh.mustache", "", "git_push.sh"));
 
         SemVer ngVersion = determineNgVersion();
 
@@ -153,7 +148,7 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
             additionalProperties.put("useNgPackagr", false);
         } else {
             additionalProperties.put("useNgPackagr", true);
-            supportingFiles.add(new SupportingFile("ng-package.mustache", getIndexDirectory(), "ng-package.json"));
+            //supportingFiles.add(new SupportingFile("ng-package.mustache", getIndexDirectory(), "ng-package.json"));
         }
 
         // Libraries generated with v1.x of ng-packagr will ship with AoT metadata in v3, which is intended for Angular v4.
@@ -187,7 +182,7 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
             }
         }
 
-        kebabFileNaming = Boolean.parseBoolean(String.valueOf(additionalProperties.get(KEBAB_FILE_NAME)));
+        kebabFileNaming = true;//Boolean.parseBoolean(String.valueOf(additionalProperties.get(KEBAB_FILE_NAME)));
 
     }
 
@@ -392,6 +387,148 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
         parameter.dataType = applyLocalTypeMapping(parameter.dataType);
     }
 
+    class KnownOperation {
+        String name;
+        String method;
+        List<CodegenParameter> urlParams = new ArrayList<>();
+        List<CodegenParameter> queryParams = new ArrayList<>();
+        boolean found = false;
+        boolean hasBody = false;
+
+        KnownOperation(String name, String method, Boolean hasBody, DefaultCodegenConfig cfg) {
+            this.name = cfg.toOperationId(name);
+            this.method = method;
+            this.hasBody = hasBody;
+        }
+
+        boolean compare(CodegenOperation op) {
+            return  name.equals(op.getOperationId()) &&
+                    method.equals(op.getHttpMethod()) &&
+                    hasBody == op.getHasBodyParam() &&
+                    compareParams(queryParams, op.queryParams) &&
+                    compareParams(urlParams, op.pathParams);
+        }
+
+        private List<CodegenParameter> sort(List<CodegenParameter> ops) {
+            return ops
+                .stream()
+                .filter(a -> a != null && a.baseName != null)
+                .sorted(Comparator.comparing(a -> a.baseName)).collect(Collectors.toList());
+        }
+
+        private boolean compareParams(List<CodegenParameter> l1, List<CodegenParameter> l2) {
+            List<CodegenParameter> s1 = sort(l1);
+            List<CodegenParameter> s2 = sort(l2);
+
+            if (s1.size() != s2.size()) {
+                return false;
+            }
+
+            for (int i = 0; i < s1.size(); i++) {
+                if (!s1.get(i).baseName.equals(s2.get(i).baseName) ||
+                    !s1.get(i).dataType.equals(s2.get(i).dataType) ||
+                    s1.get(i).required != s2.get(i).required ||
+                    !s1.get(i).dataFormat.equals(s2.get(i).dataFormat)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    // Replaces CodegenOperation to add isPostOrPut parameter in templates.
+    class CodegenOperationWithMethod extends CodegenOperation {
+        public boolean getIsPost() { return "post".equals(httpMethod.toLowerCase()); }
+        public boolean getIsPut() { return "put".equals(httpMethod.toLowerCase()); }
+        public boolean getIsGet() { return "get".equals(httpMethod.toLowerCase()); }
+        public boolean getIsDelete() { return "delete".equals(httpMethod.toLowerCase()); }
+        public boolean getIsPostOrPut() { return getIsPost() || getIsPut(); }
+
+        public String getPathNoApi() {
+            if (path.startsWith("/Api")) {
+                return path.substring("/Api".length());
+            }
+            return path;
+        }
+
+        public CodegenOperationWithMethod(CodegenOperation op) {
+            this.httpMethod = op.httpMethod;
+            this.authMethods = op.authMethods;
+            this.path = op.path;
+            this.operationId = op.operationId;
+            this.baseName = op.baseName;
+            this.pathParams = op.pathParams;
+            this.nickname = op.nickname;
+            this.bodyParams = op.bodyParams;
+            this.bodyParam = op.bodyParam;
+            this.examples = op.examples;
+            this.headerParams = op.headerParams;
+            this.formParams = op.formParams;
+            this.imports = op.imports;
+            this.tags = op.tags;
+            this.allParams = op.allParams;
+            this.queryParams = op.queryParams;
+            this.consumes = op.consumes;
+            this.contents = op.contents;
+            this.defaultResponse = op.defaultResponse;
+            this.discriminator = op.discriminator;
+            this.externalDocs = op.externalDocs;
+            this.notes = op.notes;
+            this.operationIdCamelCase = op.operationIdCamelCase;
+            this.operationIdLowerCase = op.operationIdLowerCase;
+            this.prioritizedContentTypes = op.prioritizedContentTypes;
+            this.produces = op.produces;
+            this.responses = op.responses;
+            this.returnBaseType = op.returnBaseType;
+            this.returnContainer = op.returnContainer;
+            this.returnType = op.returnType;
+            this.summary = op.summary;
+            this.unescapedNotes = op.unescapedNotes;
+            this.responseHeaders.clear();
+            this.responseHeaders.addAll(op.responseHeaders);
+            this.cookieParams = op.cookieParams;
+            this.operationIdSnakeCase = op.operationIdSnakeCase;
+            this.requestBodyExamples = op.requestBodyExamples;
+            this.requiredParams = op.requiredParams;
+            this.returnSimpleType = op.returnSimpleType;
+            this.returnTypeIsPrimitive = op.returnTypeIsPrimitive;
+            this.subresourceOperation = op.subresourceOperation;
+            this.testPath = op.testPath;
+            this.vendorExtensions = op.vendorExtensions;
+        }
+    }
+
+    private void printParam(CodegenParameter p) {
+        System.out.println("Base name: " + p.baseName);
+        System.out.println("Param name: " + p.paramName);
+        System.out.println("Datatype: " + p.dataType);
+        System.out.println("Required: " + p.required);
+        System.out.println("Data format: " + p.dataFormat);
+        System.out.println("Enum name: " + p.enumName);
+        System.out.println("********************************************");
+    }
+
+    private void printOp(CodegenOperation op) {
+        System.out.println("OperationId: " + op.operationId);
+        System.out.println("Http method: " + op.httpMethod);
+        System.out.println("Has body params: " + op.getHasBodyParam());
+        System.out.println("Return type: " + op.returnType);
+        System.out.println("Return base type: " + op.returnBaseType);
+        System.out.println("Return container: " + op.returnContainer);
+        System.out.println("Path: " + op.path);
+        System.out.println("Path params: ");
+        for (CodegenParameter p : op.pathParams) {
+            printParam(p);
+        }
+        System.out.println("********************************************");
+        System.out.println("Query params: ");
+        for (CodegenParameter p : op.queryParams) {
+            printParam(p);
+        }
+        System.out.println("********************************************");
+        System.out.println("********************************************");
+    }
+
     @Override
     public Map<String, Object> postProcessOperations(Map<String, Object> operations) {
         Map<String, Object> objs = (Map<String, Object>) operations.get("operations");
@@ -400,38 +537,91 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
         objs.put("apiFilename", getApiFilenameFromClassname(objs.get("classname").toString()));
 
         List<CodegenOperation> ops = (List<CodegenOperation>) objs.get("operation");
-        for (CodegenOperation op : ops) {
-            if ((boolean) additionalProperties.get("useHttpClient")) {
-                op.httpMethod = op.httpMethod.toLowerCase(Locale.ENGLISH);
-            } else {
-                // Convert httpMethod to Angular's RequestMethod enum
-                // https://angular.io/docs/ts/latest/api/http/index/RequestMethod-enum.html
-                switch (op.httpMethod) {
-                case "GET":
-                    op.httpMethod = "RequestMethod.Get";
-                    break;
-                case "POST":
-                    op.httpMethod = "RequestMethod.Post";
-                    break;
-                case "PUT":
-                    op.httpMethod = "RequestMethod.Put";
-                    break;
-                case "DELETE":
-                    op.httpMethod = "RequestMethod.Delete";
-                    break;
-                case "OPTIONS":
-                    op.httpMethod = "RequestMethod.Options";
-                    break;
-                case "HEAD":
-                    op.httpMethod = "RequestMethod.Head";
-                    break;
-                case "PATCH":
-                    op.httpMethod = "RequestMethod.Patch";
-                    break;
-                default:
-                    throw new RuntimeException("Unknown HTTP Method " + op.httpMethod + " not allowed");
+
+        CodegenParameter requiredId = new CodegenParameter();
+        requiredId.baseName = "id";
+        requiredId.dataType = "number";
+        requiredId.dataFormat = "int64";
+        requiredId.required = true;
+
+        KnownOperation add = new KnownOperation("Add", "GET", false,this);
+        KnownOperation item = new KnownOperation("Item", "GET", false, this);
+        KnownOperation delete = new KnownOperation("Delete", "DELETE", false, this);
+        KnownOperation save = new KnownOperation("Save", "PUT", true, this);
+        KnownOperation list = new KnownOperation("List", "GET", false, this);
+        KnownOperation history = new KnownOperation("History", "GET", false, this);
+
+        item.urlParams.add(requiredId);
+        delete.urlParams.add(requiredId);
+        history.urlParams.add(requiredId);
+
+        CodegenParameter datumOd = new CodegenParameter();
+        datumOd.baseName = "datumOd";
+        datumOd.dataType = "string";
+        datumOd.dataFormat = "date-time";
+        datumOd.required = false;
+
+        CodegenParameter DatumDo = new CodegenParameter();
+        DatumDo.baseName = "DatumDo";
+        DatumDo.dataType = "string";
+        DatumDo.dataFormat = "date-time";
+        DatumDo.required = false;
+
+
+        CodegenParameter maxPocet = new CodegenParameter();
+        maxPocet.baseName = "maxPocet";
+        maxPocet.dataType = "number";
+        maxPocet.dataFormat = "int32";
+        maxPocet.required = false;
+
+        history.queryParams.add(datumOd);
+        history.queryParams.add(DatumDo);
+        history.queryParams.add(maxPocet);
+
+        KnownOperation[] knownOps = {add, item, delete, save, list, history};
+
+        List<CodegenOperation> toRemove = new ArrayList<>();
+        for (int i = 0; i < ops.size(); i++) {
+            CodegenOperation op = ops.get(i);
+            //printOp(op);
+
+            for (KnownOperation kOp : knownOps) {
+                if (kOp.compare(op)) {
+                    kOp.found = true;
+                    toRemove.add(op);
                 }
             }
+        }
+        boolean extendsGeneric = true;
+        for (KnownOperation kOp : knownOps) {
+            if (!kOp.found) {
+                extendsGeneric = false;
+            }
+        }
+
+        String dp3Type = null;
+        if (extendsGeneric) {
+            String entityName = null;
+            for (CodegenOperation op : toRemove) {
+                if (op.getOperationId().equals(add.name)) {
+                    dp3Type = op.returnType;
+                    entityName = op.path.substring("/Api".length(), op.path.length() - "/Add".length());
+                }
+            }
+            if (dp3Type != null) {
+                ops.removeAll(toRemove);
+                objs.put("isDp3Generic", "true");
+                objs.put("dp3TypeName", dp3Type);
+                objs.put("dp3EntityName", entityName);
+            }
+        }
+
+        if (!ops.isEmpty()) {
+            objs.put("hasExtraMethods", "true");
+        }
+
+        for (CodegenOperation op : ops) {
+            op.httpMethod = op.httpMethod.toLowerCase(Locale.ENGLISH);
 
             // Prep a string buffer where we're going to set up our new version of the string.
             StringBuilder pathBuffer = new StringBuilder();
@@ -471,11 +661,46 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
             op.path = pathBuffer.toString();
         }
 
+        List<CodegenOperationWithMethod> withMethods = new ArrayList<>();
+        for (CodegenOperation op : ops) {
+            withMethods.add(new CodegenOperationWithMethod(op));
+        }
+        ops.clear();
+        ops.addAll(withMethods);
+
         // Add additional filename information for model imports in the services
         List<Map<String, Object>> imports = (List<Map<String, Object>>) operations.get("imports");
+
         for (Map<String, Object> im : imports) {
             im.put("filename", im.get("import"));
             im.put("classname", getModelnameFromModelFilename(im.get("filename").toString()));
+        }
+
+        // Remove Datahistory and GridApiResponse from imports if this extends
+        // BaseHttpService and none of the other calls return these types.
+        if (extendsGeneric) {
+            List<Map<String, Object>> importsToRemove = new ArrayList<>();
+            boolean hasDataHist = "Datahistory".equals(dp3Type);
+            boolean hasGridResp = "GridApiResponse".equals(dp3Type);
+
+            for (CodegenOperation op : ops) {
+                if (!hasDataHist && "Datahistory".equals(op.returnBaseType)) {
+                    hasDataHist = true;
+                } else if (!hasGridResp && "GridApiResponse".equals(op.returnBaseType)) {
+                    hasGridResp = true;
+                }
+                if (hasGridResp && hasDataHist) {
+                    break;
+                }
+            }
+            for (Map<String, Object> im : imports) {
+                String modelName = im.get("classname").toString();
+                if ((!hasDataHist && "Datahistory".equals(modelName)) ||
+                    (!hasGridResp && "GridApiResponse".equals(modelName))) {
+                    importsToRemove.add(im);
+                }
+            }
+            imports.removeAll(importsToRemove);
         }
 
         return operations;
@@ -490,6 +715,7 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
         for (Object _mo : models) {
             Map<String, Object> mo = (Map<String, Object>) _mo;
             CodegenModel cm = (CodegenModel) mo.get("model");
+            //System.out.println("classname: " + cm.classname + ", filename: " + cm.classFilename + ", name: " + cm.name + ", model name: " + toModelName(cm.name));
             mo.put("tsImports", toTsImports(cm, cm.imports));
         }
 
@@ -529,7 +755,7 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
         if (name.length() == 0) {
             return "DefaultService";
         }
-        return initialCaps(name) + "Service";
+        return name + "Service";
     }
 
     @Override
@@ -538,7 +764,11 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
             return "default.service";
         }
         if (kebabFileNaming) {
-            return dashize(name);
+            return dashize(name) + ".service";
+        }
+        // Keep original name if all upper case to avoid weird naming.
+        if (name.equals(name.toUpperCase())) {
+            return name + ".service";
         }
         return camelize(name, true) + ".service";
     }
@@ -553,7 +783,16 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
         if (kebabFileNaming) {
             return dashize(name);
         }
-        return camelize(toModelName(name), true);
+        String modelName = toModelName(name);
+        if (modelName.equals(modelName.toUpperCase())) {
+            return modelName;
+        }
+        return camelize(modelName, true);
+    }
+
+    @Override
+    public String toModelName(String name) {
+        return super.toModelName(dashize(name));
     }
 
     @Override
@@ -595,4 +834,32 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
         return camelize(name);
     }
 
+    @Override
+    protected String getOrGenerateOperationId(Operation operation, String path, String httpMethod) {
+        String operationId = operation.getOperationId();
+        if (StringUtils.isBlank(operationId)) {
+            String tmpPath = path;
+            // Removes parameters from path such as /{id}
+            tmpPath = tmpPath.replaceAll("\\/\\{[^{]*}", "");
+            String[] parts = tmpPath.split("/");
+            StringBuilder builder = new StringBuilder();
+            // Operation ID is the last non-parameter segment of path
+            builder.append(parts[parts.length - 1]);
+            operationId = sanitizeName(builder.toString());
+            LOGGER.warn("Empty operationId found for path: " + httpMethod + " " + path + ". Renamed to auto-generated operationId: " + operationId);
+        }
+        return operationId;
+    }
+
+    @Override
+    public String sanitizeTag(String tag) {
+        tag = camelize(sanitizeName(dashize(tag)));
+
+        // tag starts with numbers
+        if (tag.matches("^\\d.*")) {
+            tag = "Class" + tag;
+        }
+
+        return tag;
+    }
 }

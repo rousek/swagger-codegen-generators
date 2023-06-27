@@ -3368,7 +3368,8 @@ public abstract class DefaultCodegenConfig implements CodegenConfig {
         }
 
         // Remove all underscores (underscore_case to camelCase)
-        p = Pattern.compile("(_)(.)");
+        // Original "(_)(.)" makes 4_4 into 44
+        p = Pattern.compile("(_)(\\p{L})");
         m = p.matcher(word);
         while (m.find()) {
             if (i > MAX) {
@@ -3387,7 +3388,7 @@ public abstract class DefaultCodegenConfig implements CodegenConfig {
         }
 
         // Remove all hyphens (hyphen-case to camelCase)
-        p = Pattern.compile("(-)(.)");
+        p = Pattern.compile("(-)(\\p{L})");
         m = p.matcher(word);
         i = 0;
         while (m.find()) {
@@ -3399,6 +3400,7 @@ public abstract class DefaultCodegenConfig implements CodegenConfig {
             word = m.replaceFirst(m.group(2).toUpperCase());
             m = p.matcher(word);
         }
+        word = word.replace('-', '_');
 
         if (lowercaseFirstLetter && word.length() > 0) {
             word = word.substring(0, 1).toLowerCase() + word.substring(1);
