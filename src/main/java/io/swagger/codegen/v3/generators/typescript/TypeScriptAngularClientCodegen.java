@@ -387,6 +387,23 @@ public class TypeScriptAngularClientCodegen extends AbstractTypeScriptClientCode
         parameter.dataType = applyLocalTypeMapping(parameter.dataType);
     }
 
+    @Override
+    public void postProcessModelProperty(CodegenModel model, CodegenProperty var) {
+        if (var.getIsEnum()) {
+            var.setXmlName("enum");
+        } else if ("array".equals(var.containerType)) {
+            var.setXmlName("array");
+        } else if ("map".equals(var.containerType) || var.complexType != null) {
+            var.setXmlName("object");
+        } else if ("date-time".equals(var.dataFormat)) {
+            var.setXmlName("date");
+        } else {
+            var.setXmlName(var.datatype); // string, number, boolean, any
+        }
+        super.postProcessModelProperty(model, var);
+        //System.out.println("Datatype: " + var.datatype + ", baseType: " + var.baseType + ", containerType: " + var.containerType + ", complexType: " + var.complexType + ", format: " + var.dataFormat);
+    }
+
     class KnownOperation {
         String name;
         String method;
